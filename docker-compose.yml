@@ -23,10 +23,19 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     entrypoint: [ "/bin/sh", "-lc" ]
-    command: >
-      " echo 'Waiting for Ollama daemon...'; # On attend que le serveur ollama soit prêt en testant une commande locale # (si le daemon n'est pas prêt, ollama list échoue). until ollama list >/dev/null 2>&1; do
-        sleep 1;
-      done; echo 'Pulling models (if missing)...'; ollama pull ${GENERAL_MODEL}; ollama pull ${CODE_MODEL}; echo 'Models installed:'; ollama list; echo 'Done.'; "
+    command: |
+      echo 'Waiting for Ollama daemon...'
+      # On attend que le serveur ollama soit pret en testant une commande locale
+      # (si le daemon n'est pas pret, ollama list echoue).
+      until ollama list >/dev/null 2>&1; do
+        sleep 1
+      done
+      echo 'Pulling models (if missing)...'
+      ollama pull "${GENERAL_MODEL}"
+      ollama pull "${CODE_MODEL}"
+      echo 'Models installed:'
+      ollama list
+      echo 'Done.'
 
   agent-base:
     build:
