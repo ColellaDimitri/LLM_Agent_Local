@@ -20,27 +20,28 @@ services:
     environment:
       - GENERAL_MODEL=phi3:mini
       - CODE_MODEL=qwen2.5-coder:3b
+      - OLLAMA_HOST=http://ollama:11434
     volumes:
       - ollama_data:/root/.ollama
     entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
-          set -eu
-          echo "[ollama-init] Waiting for Ollama daemon..."
-          attempt=0
-          until ollama list >/dev/null 2>&1; do
-            attempt=$((attempt + 1))
-            echo "[ollama-init] Attempt ${attempt}: daemon not ready yet, retrying in 2s"
-            sleep 2
-          done
-          echo "[ollama-init] Daemon ready."
-          echo "[ollama-init] Pulling ${GENERAL_MODEL}..."
-          ollama pull "${GENERAL_MODEL}"
-          echo "[ollama-init] Pulling ${CODE_MODEL}..."
-          ollama pull "${CODE_MODEL}"
-          echo "[ollama-init] Installed models:"
-          ollama list
-          echo "[ollama-init] Done."
+        set -eu
+        echo "[ollama-init] Waiting for Ollama daemon..."
+        attempt=0
+        until ollama list >/dev/null 2>&1; do
+          attempt=$((attempt + 1))
+          echo "[ollama-init] Attempt ${attempt}: daemon not ready yet, retrying in 2s"
+          sleep 2
+        done
+        echo "[ollama-init] Daemon ready."
+        echo "[ollama-init] Pulling ${GENERAL_MODEL}..."
+        ollama pull "${GENERAL_MODEL}"
+        echo "[ollama-init] Pulling ${CODE_MODEL}..."
+        ollama pull "${CODE_MODEL}"
+        echo "[ollama-init] Installed models:"
+        ollama list
+        echo "[ollama-init] Done."
 
   agent-base:
     build:
