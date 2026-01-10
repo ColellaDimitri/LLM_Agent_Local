@@ -25,7 +25,7 @@ services:
     entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
-          set -euo pipefail
+          set -eu
           echo "[ollama-init] Waiting for Ollama daemon..."
           attempt=0
           until ollama list >/dev/null 2>&1; do
