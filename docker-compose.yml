@@ -25,18 +25,22 @@ services:
     entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
-          echo 'Waiting for Ollama daemon...'
-          # On attend que le serveur ollama soit pret en testant une commande locale
-          # (si le daemon n'est pas pret, ollama list echoue).
+          set -euo pipefail
+          echo "[ollama-init] Waiting for Ollama daemon..."
+          attempt=0
           until ollama list >/dev/null 2>&1; do
-            sleep 1
+            attempt=$((attempt + 1))
+            echo "[ollama-init] Attempt ${attempt}: daemon not ready yet, retrying in 2s"
+            sleep 2
           done
-          echo 'Pulling models (if missing)...'
+          echo "[ollama-init] Daemon ready."
+          echo "[ollama-init] Pulling ${GENERAL_MODEL}..."
           ollama pull "${GENERAL_MODEL}"
+          echo "[ollama-init] Pulling ${CODE_MODEL}..."
           ollama pull "${CODE_MODEL}"
-          echo 'Models installed:'
+          echo "[ollama-init] Installed models:"
           ollama list
-          echo 'Done.'
+          echo "[ollama-init] Done."
 
   agent-base:
     build:
