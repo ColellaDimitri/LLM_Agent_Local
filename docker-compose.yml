@@ -8,6 +8,7 @@ services:
     environment:
       - OLLAMA_KEEP_ALIVE=24h
       - OLLAMA_DEBUG=debug
+      - OLLAMA_LOAD_TIMEOUT=15m
     volumes:
       - ollama_data:/root/.ollama
 
@@ -56,6 +57,7 @@ services:
       - OLLAMA_BASE_URL=http://ollama:11434
       - GENERAL_MODEL=phi3:mini
       - CODE_MODEL=qwen2.5-coder:3b
+      - OLLAMA_HTTP_TIMEOUT=900
       - LOG_LEVEL=INFO
     ports:
       - "8088:8080"

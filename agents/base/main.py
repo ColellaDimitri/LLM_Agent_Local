@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+from typing import Any, Dict
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -12,11 +13,32 @@ CODE_MODEL = os.getenv("CODE_MODEL", "qwen2.5-coder:3b")
 CHAT_ENDPOINT = f"{OLLAMA}/api/chat"
 GENERATE_ENDPOINT = f"{OLLAMA}/api/generate"
 PULL_ENDPOINT = f"{OLLAMA}/api/pull"
+
 LOG_LEVEL_NAME = os.getenv("LOG_LEVEL", "INFO").upper()
 LOG_LEVEL = getattr(logging, LOG_LEVEL_NAME, logging.INFO)
 logging.basicConfig(level=LOG_LEVEL, format="[agent-base] %(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("agent-base")
 logger.setLevel(LOG_LEVEL)
+
+
+def _parse_timeout(value: str) -> float:
+    try:
+        seconds = float(value)
+    except ValueError:
+        return 600.0
+    return max(0.0, seconds)
+
+
+HTTP_TIMEOUT_SECONDS = _parse_timeout(os.getenv("OLLAMA_HTTP_TIMEOUT", "900"))
+CONNECT_TIMEOUT = 30.0 if HTTP_TIMEOUT_SECONDS == 0 else min(30.0, HTTP_TIMEOUT_SECONDS)
+HTTPX_TIMEOUT = None
+if HTTP_TIMEOUT_SECONDS > 0:
+    HTTPX_TIMEOUT = httpx.Timeout(
+        HTTP_TIMEOUT_SECONDS,
+        connect=CONNECT_TIMEOUT,
+        read=HTTP_TIMEOUT_SECONDS,
+        write=HTTP_TIMEOUT_SECONDS,
+    )
 
 app = FastAPI(title="Agent Base", version="0.1")
 
@@ -29,7 +51,7 @@ class ChatIn(BaseModel):
     model: str | None = None
 
 
-def _extract_response_content(data: dict) -> str:
+def _extract_response_content(data: Dict[str, Any]) -> str:
     return data.get("message", {}).get("content") or data.get("response", "") or ""
 
 
@@ -42,9 +64,28 @@ def _format_error(response: httpx.Response) -> str:
     return f"Unexpected response from Ollama (status {response.status_code})"
 
 
+def _timeout_detail(endpoint: str) -> str:
+    if HTTP_TIMEOUT_SECONDS == 0:
+        return f"Ollama n'a pas repondu (timeout illimite) sur {endpoint}"
+    seconds = int(HTTP_TIMEOUT_SECONDS)
+    return (
+        f"Ollama n'a pas repondu apres {seconds}s sur {endpoint}. "
+        "Augmente OLLAMA_HTTP_TIMEOUT si besoin."
+    )
+
+
+async def _post_with_timeout(client: httpx.AsyncClient, endpoint: str, payload: Dict[str, Any]) -> httpx.Response:
+    try:
+        return await client.post(endpoint, json=payload)
+    except httpx.ReadTimeout as err:
+        detail = _timeout_detail(endpoint)
+        logger.error("Timeout contacting %s after %.1fs", endpoint, HTTP_TIMEOUT_SECONDS)
+        raise HTTPException(status_code=504, detail=detail) from err
+
+
 async def _pull_model(client: httpx.AsyncClient, model: str) -> None:
     logger.info("Pulling missing model %s", model)
-    pull_response = await client.post(PULL_ENDPOINT, json={"model": model})
+    pull_response = await _post_with_timeout(client, PULL_ENDPOINT, {"model": model})
     if pull_response.status_code == 404:
         raise HTTPException(status_code=502, detail=f"Modele '{model}' introuvable sur Ollama (pull)")
     pull_response.raise_for_status()
@@ -58,7 +99,13 @@ def health():
 @app.post("/chat")
 async def chat(payload: ChatIn):
     model = payload.model or (CODE_MODEL if payload.profile.lower() == "code" else GENERAL_MODEL)
-    logger.info("Incoming chat request profile=%s explicit_model=%s resolved_model=%s", payload.profile, payload.model, model)
+    logger.info(
+        "Incoming chat request profile=%s explicit_model=%s resolved_model=%s",
+        payload.profile,
+        payload.model,
+        model,
+    )
+
     chat_payload = {
         "model": model,
         "messages": [{"role": "user", "content": payload.message}],
@@ -69,22 +116,23 @@ async def chat(payload: ChatIn):
         "prompt": payload.message,
         "stream": False,
     }
+
     used_generate = False
     chosen_endpoint = CHAT_ENDPOINT
     start = time.perf_counter()
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        response = await client.post(CHAT_ENDPOINT, json=chat_payload)
+    async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
+        response = await _post_with_timeout(client, CHAT_ENDPOINT, chat_payload)
 
         if response.status_code == 404:
             logger.warning("/api/chat not available (status 404), falling back to /api/generate")
-            response = await client.post(GENERATE_ENDPOINT, json=generate_payload)
+            response = await _post_with_timeout(client, GENERATE_ENDPOINT, generate_payload)
             chosen_endpoint = GENERATE_ENDPOINT
             used_generate = True
             if response.status_code == 404:
                 logger.warning("Model %s missing on Ollama, attempting automatic pull", model)
                 await _pull_model(client, model)
-                response = await client.post(GENERATE_ENDPOINT, json=generate_payload)
+                response = await _post_with_timeout(client, GENERATE_ENDPOINT, generate_payload)
 
         try:
             response.raise_for_status()
