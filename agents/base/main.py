@@ -1,10 +1,12 @@
+import json
 import logging
 import os
 import time
-from typing import Any, Dict
+from typing import Any, AsyncGenerator, Dict
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 OLLAMA = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -41,6 +43,14 @@ if HTTP_TIMEOUT_SECONDS > 0:
     )
 
 app = FastAPI(title="Agent Base", version="0.1")
+
+
+class _EndpointUnavailable(Exception):
+    """Raised when an Ollama endpoint (chat/generate) is missing."""
+
+
+class _ModelMissing(Exception):
+    """Raised when the requested model is not available locally."""
 
 
 class ChatIn(BaseModel):
@@ -89,6 +99,45 @@ async def _pull_model(client: httpx.AsyncClient, model: str) -> None:
     if pull_response.status_code == 404:
         raise HTTPException(status_code=502, detail=f"Modele '{model}' introuvable sur Ollama (pull)")
     pull_response.raise_for_status()
+
+
+async def _stream_ollama(
+    client: httpx.AsyncClient,
+    endpoint: str,
+    payload: Dict[str, Any],
+) -> AsyncGenerator[str, None]:
+    async with client.stream("POST", endpoint, json=payload) as response:
+        if response.status_code == 404:
+            if endpoint == CHAT_ENDPOINT:
+                raise _EndpointUnavailable()
+            raise _ModelMissing()
+
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as err:
+            detail = _format_error(err.response)
+            logger.error(
+                "Streaming call failed endpoint=%s status=%s detail=%s",
+                endpoint,
+                err.response.status_code,
+                detail,
+            )
+            raise HTTPException(status_code=502, detail=detail) from err
+
+        async for line in response.aiter_lines():
+            if not line:
+                continue
+            try:
+                chunk = json.loads(line)
+            except json.JSONDecodeError:
+                logger.debug("Non-JSON chunk from %s: %s", endpoint, line)
+                yield line
+                continue
+            if chunk.get("done"):
+                break
+            content = _extract_response_content(chunk)
+            if content:
+                yield content
 
 
 @app.get("/health")
@@ -159,3 +208,67 @@ async def chat(payload: ChatIn):
     )
 
     return {"used_model": model, "response": content, "used_generate": used_generate}
+
+
+@app.post("/chat-stream")
+async def chat_stream(payload: ChatIn):
+    model = payload.model or (CODE_MODEL if payload.profile.lower() == "code" else GENERAL_MODEL)
+    logger.info(
+        "Incoming streaming request profile=%s explicit_model=%s resolved_model=%s",
+        payload.profile,
+        payload.model,
+        model,
+    )
+
+    chat_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": payload.message}],
+        "stream": True,
+    }
+    generate_payload = {
+        "model": model,
+        "prompt": payload.message,
+        "stream": True,
+    }
+
+    start = time.perf_counter()
+    used_generate = False
+    total_chars = 0
+    endpoint_used = "/api/chat"
+
+    async def event_stream() -> AsyncGenerator[str, None]:
+        nonlocal used_generate, total_chars, endpoint_used
+        try:
+            async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
+                try:
+                    async for chunk in _stream_ollama(client, CHAT_ENDPOINT, chat_payload):
+                        total_chars += len(chunk)
+                        yield chunk
+                    return
+                except _EndpointUnavailable:
+                    logger.warning("/api/chat not available for streaming, falling back to /api/generate")
+                    used_generate = True
+                    endpoint_used = "/api/generate"
+
+                while True:
+                    try:
+                        async for chunk in _stream_ollama(client, GENERATE_ENDPOINT, generate_payload):
+                            total_chars += len(chunk)
+                            yield chunk
+                        break
+                    except _ModelMissing:
+                        await _pull_model(client, model)
+                        continue
+        finally:
+            duration = time.perf_counter() - start
+            logger.info(
+                "chat-stream served endpoint=%s duration=%.2fs chars=%d",
+                endpoint_used,
+                duration,
+                total_chars,
+            )
+
+    response = StreamingResponse(event_stream(), media_type="text/plain; charset=utf-8")
+    response.headers["X-Used-Model"] = model
+    response.headers["Cache-Control"] = "no-store"
+    return response
