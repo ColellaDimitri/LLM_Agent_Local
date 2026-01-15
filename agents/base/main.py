@@ -540,7 +540,9 @@ def index():
       const payload = {{
         message,
         profile: agentSelect.value,
-        history: history.map((turn) => ({{ ...turn }})),
+        history: history.map(function (turn) {{
+          return {{ role: turn.role, content: turn.content }};
+        }}),
       }};
 
       try {{
