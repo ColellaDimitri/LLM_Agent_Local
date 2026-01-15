@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, AsyncGenerator, Dict, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -64,6 +64,8 @@ class ChatIn(BaseModel):
     profile: str = "general"
     # override explicite si tu veux (ex: "llama3.2:3b")
     model: str | None = None
+    # historique optionnel [{"role": "user|assistant|system", "content": "..."}]
+    history: List[Dict[str, str]] | None = None
 
 
 def _extract_response_content(data: Dict[str, Any]) -> str:
@@ -78,15 +80,52 @@ def _resolve_model(payload: ChatIn) -> str:
     return GENERAL_MODEL
 
 
-def _build_payloads(message: str, model: str, stream: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+def _normalize_history(history: List[Dict[str, str]] | None) -> List[Dict[str, str]]:
+    if not history:
+        return []
+    normalized: List[Dict[str, str]] = []
+    for turn in history:
+        if not isinstance(turn, dict):
+            continue
+        role = str(turn.get("role", "")).lower()
+        content = turn.get("content")
+        if role not in {"user", "assistant", "system"}:
+            continue
+        if not isinstance(content, str) or not content.strip():
+            continue
+        normalized.append({"role": role, "content": content})
+    return normalized
+
+
+def _history_prompt(history: List[Dict[str, str]], message: str) -> str:
+    if not history:
+        return message
+    lines: List[str] = []
+    role_map = {"user": "Utilisateur", "assistant": "Assistant", "system": "Systeme"}
+    for turn in history:
+        label = role_map.get(turn["role"], turn["role"].capitalize())
+        lines.append(f"{label}: {turn['content']}")
+    lines.append(f"Utilisateur: {message}")
+    lines.append("Assistant:")
+    return "\n".join(lines)
+
+
+def _build_payloads(
+    message: str,
+    model: str,
+    stream: bool,
+    history: List[Dict[str, str]] | None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    normalized_history = _normalize_history(history)
+    messages = [*normalized_history, {"role": "user", "content": message}]
     chat_payload = {
         "model": model,
-        "messages": [{"role": "user", "content": message}],
+        "messages": messages,
         "stream": stream,
     }
     generate_payload = {
         "model": model,
-        "prompt": message,
+        "prompt": _history_prompt(normalized_history, message),
         "stream": stream,
     }
     return chat_payload, generate_payload
@@ -373,6 +412,7 @@ def index():
     const status = document.getElementById('status');
     const agentSelect = document.getElementById('agentSelect');
     let controller = null;
+    const history = [];
 
     function appendBubble(text, role) {{
       const row = document.createElement('div');
@@ -395,15 +435,20 @@ def index():
       controller = new AbortController();
       const signal = controller.signal;
       status.textContent = 'Generation en cours... (ECHAP pour annuler)';
-      const userBubble = appendBubble(message, 'user');
+      appendBubble(message, 'user');
       const assistantBubble = appendBubble('', 'assistant');
       promptInput.value = '';
 
       try {{
+        const payload = {{
+          message,
+          profile: agentSelect.value,
+          history: history.map((turn) => ({{ ...turn }})),
+        }};
         const response = await fetch('/chat-stream', {{
           method: 'POST',
           headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify({{ message, profile: agentSelect.value }}),
+          body: JSON.stringify(payload),
           signal,
         }});
 
@@ -421,6 +466,8 @@ def index():
           output.scrollTop = output.scrollHeight;
         }}
         status.textContent = 'Termine';
+        history.push({{ role: 'user', content: message }});
+        history.push({{ role: 'assistant', content: assistantBubble.textContent }});
       }} catch (err) {{
         if (err.name === 'AbortError') {{
           status.textContent = 'Generation interrompue';
@@ -458,7 +505,12 @@ async def chat(payload: ChatIn):
         model,
     )
 
-    chat_payload, generate_payload = _build_payloads(payload.message, model, stream=False)
+    chat_payload, generate_payload = _build_payloads(
+        payload.message,
+        model,
+        stream=False,
+        history=payload.history,
+    )
 
     used_generate = False
     endpoint_used = "/api/chat"
@@ -510,7 +562,12 @@ async def chat_stream(payload: ChatIn):
         model,
     )
 
-    chat_payload, generate_payload = _build_payloads(payload.message, model, stream=True)
+    chat_payload, generate_payload = _build_payloads(
+        payload.message,
+        model,
+        stream=True,
+        history=payload.history,
+    )
 
     start = time.perf_counter()
     used_generate = False
