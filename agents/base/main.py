@@ -229,7 +229,7 @@ def index():
     * {{ box-sizing: border-box; }}
     body {{
       margin: 0;
-      padding: 2rem;
+      padding: clamp(0.8rem, 2vw, 2rem);
       background: radial-gradient(circle at top, #151929, var(--bg));
       font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
       color: var(--text);
@@ -240,6 +240,7 @@ def index():
     }}
     .shell {{
       width: min(900px, 100%);
+      min-height: calc(100vh - clamp(0.8rem, 2vw, 2rem)*2);
       display: flex;
       flex-direction: column;
       gap: 1rem;
@@ -250,6 +251,12 @@ def index():
       border-radius: 16px;
       padding: 1.25rem;
       box-shadow: 0 25px 60px rgba(0,0,0,0.35);
+    }}
+    .panel.conversation {{
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
     }}
     .header {{
       display: flex;
@@ -273,12 +280,40 @@ def index():
     }}
     select:focus {{ outline: 1px solid var(--accent); }}
     #output {{
-      min-height: 50vh;
-      max-height: 60vh;
+      flex: 1;
+      min-height: 0;
+      margin-top: 0.5rem;
       overflow-y: auto;
-      white-space: pre-wrap;
       line-height: 1.6;
       font-size: 1rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      padding-right: 0.4rem;
+    }}
+    .message-row {{
+      display: flex;
+      width: 100%;
+    }}
+    .message-row.user {{ justify-content: flex-end; }}
+    .message-row.assistant {{ justify-content: flex-start; }}
+    .bubble {{
+      max-width: 85%;
+      padding: 0.85rem 1rem;
+      border-radius: 18px;
+      box-shadow: 0 12px 30px rgba(0,0,0,0.25);
+    }}
+    .bubble.user {{
+      background: var(--accent);
+      color: #050712;
+      border-bottom-right-radius: 6px;
+    }}
+    .bubble.assistant {{
+      background: rgba(255,255,255,0.04);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 6px;
+      color: var(--text);
+      white-space: pre-wrap;
     }}
     .status {{
       font-size: 0.9rem;
@@ -315,7 +350,7 @@ def index():
 </head>
 <body>
   <div class=\"shell\">
-    <div class=\"panel\">
+    <div class=\"panel conversation\">
       <div class=\"header\">
         <div class=\"title\">LLM Console</div>
         <div>
@@ -339,6 +374,18 @@ def index():
     const agentSelect = document.getElementById('agentSelect');
     let controller = null;
 
+    function appendBubble(text, role) {{
+      const row = document.createElement('div');
+      row.className = `message-row ${role}`;
+      const bubble = document.createElement('div');
+      bubble.className = `bubble ${role}`;
+      bubble.textContent = text;
+      row.appendChild(bubble);
+      output.appendChild(row);
+      output.scrollTop = output.scrollHeight;
+      return bubble;
+    }}
+
     async function sendPrompt(evt) {{
       evt.preventDefault();
       const message = promptInput.value.trim();
@@ -347,8 +394,10 @@ def index():
       if (controller) controller.abort();
       controller = new AbortController();
       const signal = controller.signal;
-      output.textContent = '';
       status.textContent = 'Generation en cours... (ECHAP pour annuler)';
+      const userBubble = appendBubble(message, 'user');
+      const assistantBubble = appendBubble('', 'assistant');
+      promptInput.value = '';
 
       try {{
         const response = await fetch('/chat-stream', {{
@@ -368,15 +417,19 @@ def index():
         while (true) {{
           const {{ value, done }} = await reader.read();
           if (done) break;
-          output.textContent += decoder.decode(value, {{ stream: true }});
+          assistantBubble.textContent += decoder.decode(value, {{ stream: true }});
           output.scrollTop = output.scrollHeight;
         }}
         status.textContent = 'Termine';
       }} catch (err) {{
         if (err.name === 'AbortError') {{
           status.textContent = 'Generation interrompue';
+          if (!assistantBubble.textContent) {{
+            assistantBubble.textContent = '[Generation interrompue]';
+          }}
         }} else {{
           status.textContent = 'Erreur: ' + err.message;
+          assistantBubble.textContent = '⚠️ ' + err.message;
         }}
       }} finally {{
         controller = null;
