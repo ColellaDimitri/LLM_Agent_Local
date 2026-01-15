@@ -510,10 +510,10 @@ def index():
       if (step.thinking) parts.push('[Reflexion] ' + step.thinking);
       if (step.action === 'call_model') {{
         parts.push('[Action] appel ' + (step.target || 'general'));
-        if (step.prompt) parts.push('Prompt envoye:\n' + step.prompt);
-        if (step.result) parts.push('Resultat:\n' + step.result);
+        if (step.prompt) parts.push('Prompt envoye:\\n' + step.prompt);
+        if (step.result) parts.push('Resultat:\\n' + step.result);
       }}
-      const text = parts.join('\n\n').trim();
+      const text = parts.join('\\n\\n').trim();
       if (!text) return;
       const bubble = appendBubble(text, 'assistant');
       bubble.classList.add('trace');
