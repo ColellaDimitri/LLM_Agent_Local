@@ -47,7 +47,20 @@ app = FastAPI(title="Agent Base", version="0.1")
 AGENT_OPTIONS = [
     {"id": "general", "label": f"General ({GENERAL_MODEL})"},
     {"id": "code", "label": f"Code ({CODE_MODEL})"},
+    {"id": "agent", "label": "Agent (multi-outils)"},
 ]
+
+AGENT_MAX_STEPS = int(os.getenv("AGENT_MAX_STEPS", "4"))
+AGENT_PLANNER_PROMPT = (
+    "Tu es un agent autonome. Tu raisonnes en plusieurs etapes. "
+    "Format JSON attendu: {\n"
+    "  \"thinking\": \"...\",\n"
+    "  \"action\": \"call_model\" ou \"final_answer\",\n"
+    "  \"target\": \"general\" ou \"code\" (requis si action=call_model),\n"
+    "  \"prompt\": \"texte\" (requis si action=call_model),\n"
+    "  \"final_answer\": \"texte\" (requis si action=final_answer)\n"
+    "}. Tu dois suivre strictement ce schema."
+)
 
 
 class _EndpointUnavailable(Exception):
@@ -65,6 +78,11 @@ class ChatIn(BaseModel):
     # override explicite si tu veux (ex: "llama3.2:3b")
     model: str | None = None
     # historique optionnel [{"role": "user|assistant|system", "content": "..."}]
+    history: List[Dict[str, str]] | None = None
+
+
+class AgentIn(BaseModel):
+    message: str
     history: List[Dict[str, str]] | None = None
 
 
@@ -110,6 +128,17 @@ def _history_prompt(history: List[Dict[str, str]], message: str) -> str:
     return "\n".join(lines)
 
 
+def _format_history_for_agent(history: List[Dict[str, str]]) -> str:
+    if not history:
+        return "Aucun contexte precedent."
+    segments = []
+    role_map = {"user": "Utilisateur", "assistant": "Assistant", "system": "Systeme"}
+    for turn in history[-8:]:
+        label = role_map.get(turn["role"], turn["role"].capitalize())
+        segments.append(f"{label}: {turn['content']}")
+    return "\n".join(segments)
+
+
 def _build_payloads(
     message: str,
     model: str,
@@ -129,6 +158,18 @@ def _build_payloads(
         "stream": stream,
     }
     return chat_payload, generate_payload
+
+
+async def _invoke_generate_text(
+    client: httpx.AsyncClient,
+    model: str,
+    prompt: str,
+) -> str:
+    payload = {"model": model, "prompt": prompt, "stream": False}
+    response = await _post_generate_with_pull(client, payload, model)
+    response.raise_for_status()
+    data = response.json()
+    return _extract_response_content(data)
 
 
 def _format_error(response: httpx.Response) -> str:
@@ -232,6 +273,37 @@ async def _stream_generate_with_pull(
         except _ModelMissing:
             logger.warning("Model %s missing on Ollama, attempting automatic pull", model)
             await _pull_model(client, model)
+
+
+def _extract_json_block(text: str) -> Dict[str, Any] | None:
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+    snippet = text[start : end + 1]
+    try:
+        return json.loads(snippet)
+    except json.JSONDecodeError:
+        return None
+
+
+def _parse_agent_directive(raw: str) -> Dict[str, Any]:
+    data = _extract_json_block(raw)
+    if not data:
+        return {"action": "final_answer", "final_answer": raw.strip(), "thinking": raw.strip()}
+    return data
+
+
+def _agent_prompt(task: str, steps: List[Dict[str, Any]], history: List[Dict[str, str]]) -> str:
+    steps_dump = json.dumps(steps, ensure_ascii=False, indent=2) if steps else "Aucune"
+    history_text = _format_history_for_agent(history)
+    return (
+        f"{AGENT_PLANNER_PROMPT}\n\n"
+        f"Contexte utilisateur:\n{history_text}\n\n"
+        f"Tache actuelle: {task}\n\n"
+        f"Etapes deja effectuees:\n{steps_dump}\n\n"
+        "Choisis l'action appropriee."
+    )
 
 
 @app.get("/health")
@@ -354,6 +426,12 @@ def index():
       color: var(--text);
       white-space: pre-wrap;
     }}
+    .bubble.trace {{
+      background: rgba(255,255,255,0.02);
+      color: var(--muted);
+      border-style: dashed;
+      font-size: 0.9rem;
+    }}
     .status {{
       font-size: 0.9rem;
       color: var(--muted);
@@ -426,6 +504,21 @@ def index():
       return bubble;
     }}
 
+    function renderAgentTraceEntry(step) {{
+      const parts = [];
+      if (step.step) parts.push(`Etape ${step.step}`);
+      if (step.thinking) parts.push(`[Reflexion] ${step.thinking}`);
+      if (step.action === 'call_model') {{
+        parts.push(`[Action] appel ${step.target || 'general'}`);
+        if (step.prompt) parts.push(`Prompt envoye:\n${step.prompt}`);
+        if (step.result) parts.push(`Resultat:\n${step.result}`);
+      }}
+      const text = parts.join('\n\n').trim();
+      if (!text) return;
+      const bubble = appendBubble(text, 'assistant');
+      bubble.classList.add('trace');
+    }}
+
     async function sendPrompt(evt) {{
       evt.preventDefault();
       const message = promptInput.value.trim();
@@ -434,54 +527,95 @@ def index():
       if (controller) controller.abort();
       controller = new AbortController();
       const signal = controller.signal;
-      status.textContent = 'Generation en cours... (ECHAP pour annuler)';
+      const isAgentic = agentSelect.value === 'agent';
+      const statusRunning = isAgentic ? 'Agent en reflexion...' : 'Generation en cours... (ECHAP pour annuler)';
+      status.textContent = statusRunning;
       appendBubble(message, 'user');
-      const assistantBubble = appendBubble('', 'assistant');
+      let assistantBubble = null;
+      if (!isAgentic) {{
+        assistantBubble = appendBubble('', 'assistant');
+      }}
       promptInput.value = '';
 
+      const payload = {{
+        message,
+        profile: agentSelect.value,
+        history: history.map((turn) => ({{ ...turn }})),
+      }};
+
       try {{
-        const payload = {{
-          message,
-          profile: agentSelect.value,
-          history: history.map((turn) => ({{ ...turn }})),
-        }};
-        const response = await fetch('/chat-stream', {{
-          method: 'POST',
-          headers: {{ 'Content-Type': 'application/json' }},
-          body: JSON.stringify(payload),
-          signal,
-        }});
-
-        if (!response.ok || !response.body) {{
-          throw new Error('Requete rejetee: ' + response.statusText);
+        if (isAgentic) {{
+          await runAgenticConversation(payload, signal);
+        }} else {{
+          await runStreamingConversation(payload, assistantBubble, signal);
         }}
-
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-
-        while (true) {{
-          const {{ value, done }} = await reader.read();
-          if (done) break;
-          assistantBubble.textContent += decoder.decode(value, {{ stream: true }});
-          output.scrollTop = output.scrollHeight;
-        }}
-        status.textContent = 'Termine';
-        history.push({{ role: 'user', content: message }});
-        history.push({{ role: 'assistant', content: assistantBubble.textContent }});
       }} catch (err) {{
         if (err.name === 'AbortError') {{
-          status.textContent = 'Generation interrompue';
-          if (!assistantBubble.textContent) {{
+          status.textContent = isAgentic ? 'Agent interrompu' : 'Generation interrompue';
+          if (assistantBubble && !assistantBubble.textContent) {{
             assistantBubble.textContent = '[Generation interrompue]';
           }}
         }} else {{
           status.textContent = 'Erreur: ' + err.message;
-          assistantBubble.textContent = '⚠️ ' + err.message;
+          if (assistantBubble) {{
+            assistantBubble.textContent = '[Erreur] ' + err.message;
+          }} else {{
+            const errorBubble = appendBubble('[Erreur] ' + err.message, 'assistant');
+            errorBubble.classList.add('trace');
+          }}
         }}
       }} finally {{
         controller = null;
         promptInput.focus();
       }}
+    }}
+
+    async function runStreamingConversation(payload, assistantBubble, signal) {{
+      const response = await fetch('/chat-stream', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify(payload),
+        signal,
+      }});
+
+      if (!response.ok || !response.body) {{
+        throw new Error('Requete rejetee: ' + response.statusText);
+      }}
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+
+      while (true) {{
+        const {{ value, done }} = await reader.read();
+        if (done) break;
+        assistantBubble.textContent += decoder.decode(value, {{ stream: true }});
+        output.scrollTop = output.scrollHeight;
+      }}
+      status.textContent = 'Termine';
+      history.push({{ role: 'user', content: payload.message }});
+      history.push({{ role: 'assistant', content: assistantBubble.textContent }});
+    }}
+
+    async function runAgenticConversation(payload, signal) {{
+      const response = await fetch('/agent', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ message: payload.message, history: payload.history }}),
+        signal,
+      }});
+      if (!response.ok) {{
+        const errorText = await response.text();
+        throw new Error(errorText || response.statusText);
+      }}
+      const data = await response.json();
+      if (Array.isArray(data.trace)) {{
+        data.trace.forEach(renderAgentTraceEntry);
+      }}
+      const finalText = (data.final_answer || '').trim() || '[Aucune réponse]';
+      appendBubble(finalText, 'assistant');
+      status.textContent = 'Agent termine';
+      history.push({{ role: 'user', content: payload.message }});
+      history.push({{ role: 'assistant', content: finalText }});
     }}
 
     form.addEventListener('submit', sendPrompt);
@@ -604,3 +738,53 @@ async def chat_stream(payload: ChatIn):
     response.headers["X-Used-Model"] = model
     response.headers["Cache-Control"] = "no-store"
     return response
+
+
+@app.post("/agent")
+async def agent(payload: AgentIn):
+    normalized_history = _normalize_history(payload.history)
+    steps: List[Dict[str, Any]] = []
+    final_answer: str | None = None
+
+    async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
+        for step_index in range(1, AGENT_MAX_STEPS + 1):
+            planner_prompt = _agent_prompt(payload.message, steps, normalized_history)
+            logger.info("[agent] Step %s planning", step_index)
+            plan_text = await _invoke_generate_text(client, GENERAL_MODEL, planner_prompt)
+            directive = _parse_agent_directive(plan_text)
+            action = (directive.get("action") or "").lower()
+            thinking = directive.get("thinking", "").strip()
+            step_info: Dict[str, Any] = {
+                "step": step_index,
+                "action": action,
+                "thinking": thinking,
+            }
+
+            if action == "call_model":
+                target = (directive.get("target") or "general").lower()
+                model = GENERAL_MODEL if target != "code" else CODE_MODEL
+                prompt = directive.get("prompt") or payload.message
+                step_info.update({"target": target, "prompt": prompt})
+                logger.info("[agent] Step %s calling %s", step_index, model)
+                result = await _invoke_generate_text(client, model, prompt)
+                step_info["result"] = result
+                steps.append(step_info)
+                continue
+
+            if action == "final_answer":
+                final_answer = directive.get("final_answer") or directive.get("answer") or thinking
+                step_info["final_answer"] = final_answer
+                steps.append(step_info)
+                break
+
+            # fallback: treat as final
+            final_answer = plan_text.strip()
+            step_info["final_answer"] = final_answer
+            steps.append(step_info)
+            break
+
+    if not final_answer:
+        raise HTTPException(status_code=500, detail="Agent n'a pas pu produire de reponse")
+
+    logger.info("[agent] Completed task with %d step(s)", len(steps))
+    return {"final_answer": final_answer, "trace": steps}
