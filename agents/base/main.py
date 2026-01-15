@@ -294,6 +294,19 @@ def _parse_agent_directive(raw: str) -> Dict[str, Any]:
     return data
 
 
+def _clean_final_answer(text: str) -> str:
+    if not text:
+        return ""
+    cleaned = text.replace("```json", "").replace("```", "").strip()
+    if "\"final_answer\"" in cleaned or "\"action\"" in cleaned:
+        parsed = _extract_json_block(cleaned)
+        if parsed and isinstance(parsed, dict):
+            value = parsed.get("final_answer")
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return cleaned
+
+
 def _agent_prompt(task: str, steps: List[Dict[str, Any]], history: List[Dict[str, str]]) -> str:
     steps_dump = json.dumps(steps, ensure_ascii=False, indent=2) if steps else "Aucune"
     history_text = _format_history_for_agent(history)
@@ -431,7 +444,25 @@ def index():
       color: var(--muted);
       border-style: dashed;
       font-size: 0.9rem;
+      max-height: 6.5rem;
+      overflow: hidden;
+      cursor: pointer;
+      position: relative;
     }}
+    .bubble.trace::after {{
+      content: "cliquer pour developper";
+      position: absolute;
+      right: 0.75rem;
+      bottom: 0.5rem;
+      font-size: 0.75rem;
+      color: var(--muted);
+      background: linear-gradient(90deg, rgba(0,0,0,0), var(--panel));
+      padding-left: 1.2rem;
+    }}
+    .bubble.trace.expanded {{
+      max-height: none;
+    }}
+    .bubble.trace.expanded::after {{ content: ""; }}
     .status {{
       font-size: 0.9rem;
       color: var(--muted);
@@ -505,6 +536,7 @@ def index():
     }}
 
     function renderAgentTraceEntry(step) {{
+      if (step.action === 'final_answer') return;
       const parts = [];
       if (step.step) parts.push('Etape ' + step.step);
       if (step.thinking) parts.push('[Reflexion] ' + step.thinking);
@@ -517,6 +549,9 @@ def index():
       if (!text) return;
       const bubble = appendBubble(text, 'assistant');
       bubble.classList.add('trace');
+      bubble.addEventListener('click', () => {{
+        bubble.classList.toggle('expanded');
+      }});
     }}
 
     async function sendPrompt(evt) {{
@@ -774,13 +809,14 @@ async def agent(payload: AgentIn):
                 continue
 
             if action == "final_answer":
-                final_answer = directive.get("final_answer") or directive.get("answer") or thinking
+                raw_answer = directive.get("final_answer") or directive.get("answer") or thinking
+                final_answer = _clean_final_answer(raw_answer)
                 step_info["final_answer"] = final_answer
                 steps.append(step_info)
                 break
 
             # fallback: treat as final
-            final_answer = plan_text.strip()
+            final_answer = _clean_final_answer(plan_text.strip())
             step_info["final_answer"] = final_answer
             steps.append(step_info)
             break
