@@ -6,7 +6,7 @@ from typing import Any, AsyncGenerator, Dict, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 
 OLLAMA = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
@@ -43,6 +43,11 @@ if HTTP_TIMEOUT_SECONDS > 0:
     )
 
 app = FastAPI(title="Agent Base", version="0.1")
+
+AGENT_OPTIONS = [
+    {"id": "general", "label": f"General ({GENERAL_MODEL})"},
+    {"id": "code", "label": f"Code ({CODE_MODEL})"},
+]
 
 
 class _EndpointUnavailable(Exception):
@@ -194,6 +199,201 @@ async def _stream_generate_with_pull(
 def health():
     return {"ok": True, "general_model": GENERAL_MODEL, "code_model": CODE_MODEL}
 
+
+@app.get("/agents")
+def list_agents():
+    return {"agents": AGENT_OPTIONS}
+
+
+@app.get("/", response_class=HTMLResponse)
+def index():
+    options = "\n".join(
+        f'<option value="{agent["id"]}">{agent["label"]}</option>' for agent in AGENT_OPTIONS
+    )
+    html = f"""<!DOCTYPE html>
+<html lang=\"fr\">
+<head>
+  <meta charset=\"UTF-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>LLM Console</title>
+  <style>
+    :root {{
+      color-scheme: dark;
+      --bg: #101218;
+      --panel: #1b1f2a;
+      --border: #2b3142;
+      --accent: #5c7cfa;
+      --text: #f2f4ff;
+      --muted: #a3adc2;
+    }}
+    * {{ box-sizing: border-box; }}
+    body {{
+      margin: 0;
+      padding: 2rem;
+      background: radial-gradient(circle at top, #151929, var(--bg));
+      font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: stretch;
+    }}
+    .shell {{
+      width: min(900px, 100%);
+      display: flex;
+      flex-direction: column;
+      gap: 1rem;
+    }}
+    .panel {{
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 1.25rem;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.35);
+    }}
+    .header {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 1rem;
+    }}
+    .title {{
+      font-size: 1.25rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }}
+    select {{
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      color: var(--text);
+      font-size: 0.95rem;
+      padding: 0.4rem 1rem;
+      min-width: 220px;
+    }}
+    select:focus {{ outline: 1px solid var(--accent); }}
+    #output {{
+      min-height: 50vh;
+      max-height: 60vh;
+      overflow-y: auto;
+      white-space: pre-wrap;
+      line-height: 1.6;
+      font-size: 1rem;
+    }}
+    .status {{
+      font-size: 0.9rem;
+      color: var(--muted);
+      min-height: 1.1rem;
+    }}
+    form {{
+      display: flex;
+      gap: 0.75rem;
+    }}
+    input[type=text] {{
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 0.9rem 1.2rem;
+      font-size: 1rem;
+      color: var(--text);
+    }}
+    input[type=text]:focus {{ outline: 1px solid var(--accent); }}
+    button {{
+      background: linear-gradient(120deg, var(--accent), #82a0ff);
+      color: #0a0d18;
+      border: none;
+      border-radius: 999px;
+      padding: 0 1.5rem;
+      font-weight: 600;
+      font-size: 1rem;
+      cursor: pointer;
+      transition: transform 120ms ease;
+    }}
+    button:active {{ transform: scale(0.97); }}
+  </style>
+</head>
+<body>
+  <div class=\"shell\">
+    <div class=\"panel\">
+      <div class=\"header\">
+        <div class=\"title\">LLM Console</div>
+        <div>
+          <label for=\"agentSelect\" style=\"font-size:0.85rem;color:var(--muted);display:block;margin-bottom:0.2rem;\">Agent</label>
+          <select id=\"agentSelect\" aria-label=\"Choisir un agent\">{options}</select>
+        </div>
+      </div>
+      <div id=\"status\" class=\"status\"></div>
+      <div id=\"output\"></div>
+    </div>
+    <form id=\"promptForm\" class=\"panel\">
+      <input id=\"promptInput\" type=\"text\" placeholder=\"Pose ta question...\" autocomplete=\"off\" required />
+      <button type=\"submit\">Envoyer</button>
+    </form>
+  </div>
+  <script>
+    const form = document.getElementById('promptForm');
+    const promptInput = document.getElementById('promptInput');
+    const output = document.getElementById('output');
+    const status = document.getElementById('status');
+    const agentSelect = document.getElementById('agentSelect');
+    let controller = null;
+
+    async function sendPrompt(evt) {{
+      evt.preventDefault();
+      const message = promptInput.value.trim();
+      if (!message) return;
+
+      if (controller) controller.abort();
+      controller = new AbortController();
+      const signal = controller.signal;
+      output.textContent = '';
+      status.textContent = 'Generation en cours... (ECHAP pour annuler)';
+
+      try {{
+        const response = await fetch('/chat-stream', {{
+          method: 'POST',
+          headers: {{ 'Content-Type': 'application/json' }},
+          body: JSON.stringify({{ message, profile: agentSelect.value }}),
+          signal,
+        }});
+
+        if (!response.ok || !response.body) {{
+          throw new Error('Requete rejetee: ' + response.statusText);
+        }}
+
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {{
+          const {{ value, done }} = await reader.read();
+          if (done) break;
+          output.textContent += decoder.decode(value, {{ stream: true }});
+          output.scrollTop = output.scrollHeight;
+        }}
+        status.textContent = 'Termine';
+      }} catch (err) {{
+        if (err.name === 'AbortError') {{
+          status.textContent = 'Generation interrompue';
+        }} else {{
+          status.textContent = 'Erreur: ' + err.message;
+        }}
+      }} finally {{
+        controller = null;
+        promptInput.focus();
+      }}
+    }}
+
+    form.addEventListener('submit', sendPrompt);
+    document.addEventListener('keydown', (event) => {{
+      if (event.key === 'Escape' && controller) {{
+        controller.abort();
+      }}
+    }});
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
 
 @app.post("/chat")
 async def chat(payload: ChatIn):
