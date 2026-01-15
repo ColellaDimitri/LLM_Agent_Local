@@ -376,9 +376,9 @@ def index():
 
     function appendBubble(text, role) {{
       const row = document.createElement('div');
-      row.className = `message-row ${role}`;
+      row.className = 'message-row ' + role;
       const bubble = document.createElement('div');
-      bubble.className = `bubble ${role}`;
+      bubble.className = 'bubble ' + role;
       bubble.textContent = text;
       row.appendChild(bubble);
       output.appendChild(row);
