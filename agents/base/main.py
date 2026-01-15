@@ -506,12 +506,12 @@ def index():
 
     function renderAgentTraceEntry(step) {{
       const parts = [];
-      if (step.step) parts.push(`Etape ${step.step}`);
-      if (step.thinking) parts.push(`[Reflexion] ${step.thinking}`);
+      if (step.step) parts.push('Etape ' + step.step);
+      if (step.thinking) parts.push('[Reflexion] ' + step.thinking);
       if (step.action === 'call_model') {{
-        parts.push(`[Action] appel ${step.target || 'general'}`);
-        if (step.prompt) parts.push(`Prompt envoye:\n${step.prompt}`);
-        if (step.result) parts.push(`Resultat:\n${step.result}`);
+        parts.push('[Action] appel ' + (step.target || 'general'));
+        if (step.prompt) parts.push('Prompt envoye:\n' + step.prompt);
+        if (step.result) parts.push('Resultat:\n' + step.result);
       }}
       const text = parts.join('\n\n').trim();
       if (!text) return;
@@ -611,7 +611,7 @@ def index():
       if (Array.isArray(data.trace)) {{
         data.trace.forEach(renderAgentTraceEntry);
       }}
-      const finalText = (data.final_answer || '').trim() || '[Aucune réponse]';
+      const finalText = (data.final_answer || '').trim() || '[Aucune reponse]';
       appendBubble(finalText, 'assistant');
       status.textContent = 'Agent termine';
       history.push({{ role: 'user', content: payload.message }});
