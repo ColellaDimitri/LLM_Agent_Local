@@ -2,7 +2,7 @@ import json
 import logging
 import os
 import time
-from typing import Any, AsyncGenerator, Dict
+from typing import Any, AsyncGenerator, Dict, Tuple
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -65,6 +65,28 @@ def _extract_response_content(data: Dict[str, Any]) -> str:
     return data.get("message", {}).get("content") or data.get("response", "") or ""
 
 
+def _resolve_model(payload: ChatIn) -> str:
+    if payload.model:
+        return payload.model
+    if payload.profile.lower() == "code":
+        return CODE_MODEL
+    return GENERAL_MODEL
+
+
+def _build_payloads(message: str, model: str, stream: bool) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    chat_payload = {
+        "model": model,
+        "messages": [{"role": "user", "content": message}],
+        "stream": stream,
+    }
+    generate_payload = {
+        "model": model,
+        "prompt": message,
+        "stream": stream,
+    }
+    return chat_payload, generate_payload
+
+
 def _format_error(response: httpx.Response) -> str:
     snippet = (response.text or "").strip()
     if snippet:
@@ -99,6 +121,19 @@ async def _pull_model(client: httpx.AsyncClient, model: str) -> None:
     if pull_response.status_code == 404:
         raise HTTPException(status_code=502, detail=f"Modele '{model}' introuvable sur Ollama (pull)")
     pull_response.raise_for_status()
+
+
+async def _post_generate_with_pull(
+    client: httpx.AsyncClient,
+    generate_payload: Dict[str, Any],
+    model: str,
+) -> httpx.Response:
+    while True:
+        response = await _post_with_timeout(client, GENERATE_ENDPOINT, generate_payload)
+        if response.status_code != 404:
+            return response
+        logger.warning("Model %s missing on Ollama, attempting automatic pull", model)
+        await _pull_model(client, model)
 
 
 async def _stream_ollama(
@@ -140,6 +175,21 @@ async def _stream_ollama(
                 yield content
 
 
+async def _stream_generate_with_pull(
+    client: httpx.AsyncClient,
+    generate_payload: Dict[str, Any],
+    model: str,
+) -> AsyncGenerator[str, None]:
+    while True:
+        try:
+            async for chunk in _stream_ollama(client, GENERATE_ENDPOINT, generate_payload):
+                yield chunk
+            return
+        except _ModelMissing:
+            logger.warning("Model %s missing on Ollama, attempting automatic pull", model)
+            await _pull_model(client, model)
+
+
 @app.get("/health")
 def health():
     return {"ok": True, "general_model": GENERAL_MODEL, "code_model": CODE_MODEL}
@@ -147,7 +197,7 @@ def health():
 
 @app.post("/chat")
 async def chat(payload: ChatIn):
-    model = payload.model or (CODE_MODEL if payload.profile.lower() == "code" else GENERAL_MODEL)
+    model = _resolve_model(payload)
     logger.info(
         "Incoming chat request profile=%s explicit_model=%s resolved_model=%s",
         payload.profile,
@@ -155,19 +205,10 @@ async def chat(payload: ChatIn):
         model,
     )
 
-    chat_payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": payload.message}],
-        "stream": False,
-    }
-    generate_payload = {
-        "model": model,
-        "prompt": payload.message,
-        "stream": False,
-    }
+    chat_payload, generate_payload = _build_payloads(payload.message, model, stream=False)
 
     used_generate = False
-    chosen_endpoint = CHAT_ENDPOINT
+    endpoint_used = "/api/chat"
     start = time.perf_counter()
 
     async with httpx.AsyncClient(timeout=HTTPX_TIMEOUT) as client:
@@ -175,13 +216,9 @@ async def chat(payload: ChatIn):
 
         if response.status_code == 404:
             logger.warning("/api/chat not available (status 404), falling back to /api/generate")
-            response = await _post_with_timeout(client, GENERATE_ENDPOINT, generate_payload)
-            chosen_endpoint = GENERATE_ENDPOINT
+            response = await _post_generate_with_pull(client, generate_payload, model)
+            endpoint_used = "/api/generate"
             used_generate = True
-            if response.status_code == 404:
-                logger.warning("Model %s missing on Ollama, attempting automatic pull", model)
-                await _pull_model(client, model)
-                response = await _post_with_timeout(client, GENERATE_ENDPOINT, generate_payload)
 
         try:
             response.raise_for_status()
@@ -189,7 +226,7 @@ async def chat(payload: ChatIn):
             detail = _format_error(err.response)
             logger.error(
                 "Ollama call failed endpoint=%s status=%s detail=%s",
-                chosen_endpoint,
+                endpoint_used,
                 err.response.status_code,
                 detail,
             )
@@ -201,7 +238,7 @@ async def chat(payload: ChatIn):
     duration = time.perf_counter() - start
     logger.info(
         "chat served endpoint=%s used_generate=%s duration=%.2fs chars=%d",
-        "/api/generate" if used_generate else "/api/chat",
+        endpoint_used,
         used_generate,
         duration,
         len(content),
@@ -212,7 +249,7 @@ async def chat(payload: ChatIn):
 
 @app.post("/chat-stream")
 async def chat_stream(payload: ChatIn):
-    model = payload.model or (CODE_MODEL if payload.profile.lower() == "code" else GENERAL_MODEL)
+    model = _resolve_model(payload)
     logger.info(
         "Incoming streaming request profile=%s explicit_model=%s resolved_model=%s",
         payload.profile,
@@ -220,16 +257,7 @@ async def chat_stream(payload: ChatIn):
         model,
     )
 
-    chat_payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": payload.message}],
-        "stream": True,
-    }
-    generate_payload = {
-        "model": model,
-        "prompt": payload.message,
-        "stream": True,
-    }
+    chat_payload, generate_payload = _build_payloads(payload.message, model, stream=True)
 
     start = time.perf_counter()
     used_generate = False
@@ -250,15 +278,9 @@ async def chat_stream(payload: ChatIn):
                     used_generate = True
                     endpoint_used = "/api/generate"
 
-                while True:
-                    try:
-                        async for chunk in _stream_ollama(client, GENERATE_ENDPOINT, generate_payload):
-                            total_chars += len(chunk)
-                            yield chunk
-                        break
-                    except _ModelMissing:
-                        await _pull_model(client, model)
-                        continue
+                async for chunk in _stream_generate_with_pull(client, generate_payload, model):
+                    total_chars += len(chunk)
+                    yield chunk
         finally:
             duration = time.perf_counter() - start
             logger.info(
