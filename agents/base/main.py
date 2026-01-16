@@ -12,6 +12,7 @@ from pydantic import BaseModel
 OLLAMA = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 GENERAL_MODEL = os.getenv("GENERAL_MODEL", "phi3:mini")
 CODE_MODEL = os.getenv("CODE_MODEL", "qwen2.5-coder:3b")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL", "llama3.2:3b")
 CHAT_ENDPOINT = f"{OLLAMA}/api/chat"
 GENERATE_ENDPOINT = f"{OLLAMA}/api/generate"
 PULL_ENDPOINT = f"{OLLAMA}/api/pull"
@@ -47,6 +48,7 @@ app = FastAPI(title="Agent Base", version="0.1")
 AGENT_OPTIONS = [
     {"id": "general", "label": f"General ({GENERAL_MODEL})"},
     {"id": "code", "label": f"Code ({CODE_MODEL})"},
+    {"id": "llama", "label": f"Llama ({LLAMA_MODEL})"},
     {"id": "agent", "label": "Agent (multi-outils)"},
 ]
 
@@ -73,7 +75,7 @@ class _ModelMissing(Exception):
 
 class ChatIn(BaseModel):
     message: str
-    # "general" ou "code" (selection manuelle)
+    # "general", "code" ou "llama" (selection manuelle)
     profile: str = "general"
     # override explicite si tu veux (ex: "llama3.2:3b")
     model: str | None = None
@@ -93,8 +95,11 @@ def _extract_response_content(data: Dict[str, Any]) -> str:
 def _resolve_model(payload: ChatIn) -> str:
     if payload.model:
         return payload.model
-    if payload.profile.lower() == "code":
+    profile = payload.profile.lower()
+    if profile == "code":
         return CODE_MODEL
+    if profile == "llama":
+        return LLAMA_MODEL
     return GENERAL_MODEL
 
 
@@ -321,7 +326,12 @@ def _agent_prompt(task: str, steps: List[Dict[str, Any]], history: List[Dict[str
 
 @app.get("/health")
 def health():
-    return {"ok": True, "general_model": GENERAL_MODEL, "code_model": CODE_MODEL}
+    return {
+        "ok": True,
+        "general_model": GENERAL_MODEL,
+        "code_model": CODE_MODEL,
+        "llama_model": LLAMA_MODEL,
+    }
 
 
 @app.get("/agents")

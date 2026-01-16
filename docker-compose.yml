@@ -22,6 +22,7 @@ services:
     environment:
       - GENERAL_MODEL=phi3:mini
       - CODE_MODEL=qwen2.5-coder:3b
+      - LLAMA_MODEL=llama3.2:3b
       - OLLAMA_HOST=http://ollama:11434
     volumes:
       - ollama_data:/root/.ollama
@@ -41,6 +42,8 @@ services:
         ollama pull "${GENERAL_MODEL}"
         echo "[ollama-init] Pulling ${CODE_MODEL}..."
         ollama pull "${CODE_MODEL}"
+        echo "[ollama-init] Pulling ${LLAMA_MODEL}..."
+        ollama pull "${LLAMA_MODEL}"
         echo "[ollama-init] Installed models:"
         ollama list
         echo "[ollama-init] Done."
@@ -57,6 +60,7 @@ services:
       - OLLAMA_BASE_URL=http://ollama:11434
       - GENERAL_MODEL=phi3:mini
       - CODE_MODEL=qwen2.5-coder:3b
+      - LLAMA_MODEL=llama3.2:3b
       - OLLAMA_HTTP_TIMEOUT=900
       - LOG_LEVEL=INFO
     ports:
