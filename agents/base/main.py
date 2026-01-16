@@ -12,7 +12,7 @@ from pydantic import BaseModel
 OLLAMA = os.getenv("OLLAMA_BASE_URL", "http://ollama:11434")
 GENERAL_MODEL = os.getenv("GENERAL_MODEL", "phi3:mini")
 CODE_MODEL = os.getenv("CODE_MODEL", "qwen2.5-coder:3b")
-LLAMA_MODEL = os.getenv("LLAMA_MODEL", "llama3.2")
+LLAMA_MODEL = os.getenv("LLAMA_MODEL", "ai/llama3.2:latest")
 CHAT_ENDPOINT = f"{OLLAMA}/api/chat"
 GENERATE_ENDPOINT = f"{OLLAMA}/api/generate"
 PULL_ENDPOINT = f"{OLLAMA}/api/pull"
