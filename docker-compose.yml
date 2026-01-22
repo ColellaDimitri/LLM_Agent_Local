@@ -30,9 +30,9 @@ services:
     command:
       - |
         set -eu
-        : "${GENERAL_MODEL:=phi3:mini}"
-        : "${CODE_MODEL:=qwen2.5-coder:3b}"
-        : "${LLAMA_MODEL:=llama3.2:3b}"
+        : "$${GENERAL_MODEL:=phi3:mini}"
+        : "$${CODE_MODEL:=qwen2.5-coder:3b}"
+        : "$${LLAMA_MODEL:=llama3.2:3b}"
         echo "[ollama-init] Waiting for Ollama daemon..."
         attempt=0
         until ollama list >/dev/null 2>&1; do
