@@ -68,7 +68,20 @@ services:
     volumes:
       - ./data:/data:rw
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    ports:
+      - "8089:8080"
+    volumes:
+      - openwebui_data:/app/backend/data
+
 volumes:
   ollama_data:
-
+  openwebui_data:
 
