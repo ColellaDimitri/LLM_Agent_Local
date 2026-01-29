@@ -75,6 +75,7 @@ services:
     image: moltbot:local
     container_name: moltbot-init
     restart: "no"
+    pull_policy: never
     depends_on:
       - ollama
     environment:
@@ -142,6 +143,7 @@ services:
     image: moltbot:local
     container_name: moltbot-gateway
     restart: unless-stopped
+    pull_policy: never
     depends_on:
       ollama:
         condition: service_started
@@ -159,6 +161,7 @@ services:
     image: moltbot:local
     container_name: moltbot-cli
     profiles: [ "tools" ]
+    pull_policy: never
     depends_on:
       - moltbot-gateway
     entrypoint: [ "moltbot" ]
