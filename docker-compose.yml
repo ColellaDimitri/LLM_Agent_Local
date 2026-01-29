@@ -30,20 +30,23 @@ services:
     command:
       - |
         set -eu
+        : "$${GENERAL_MODEL:=phi3:mini}"
+        : "$${CODE_MODEL:=qwen2.5-coder:3b}"
+        : "$${LLAMA_MODEL:=llama3.2:3b}"
         echo "[ollama-init] Waiting for Ollama daemon..."
         attempt=0
         until ollama list >/dev/null 2>&1; do
           attempt=$((attempt + 1))
-          echo "[ollama-init] Attempt ${attempt}: daemon not ready yet, retrying in 2s"
+          echo "[ollama-init] Attempt $${attempt}: daemon not ready yet, retrying in 2s"
           sleep 2
         done
         echo "[ollama-init] Daemon ready."
-        echo "[ollama-init] Pulling ${GENERAL_MODEL}..."
-        ollama pull "${GENERAL_MODEL}"
-        echo "[ollama-init] Pulling ${CODE_MODEL}..."
-        ollama pull "${CODE_MODEL}"
-        echo "[ollama-init] Pulling ${LLAMA_MODEL}..."
-        ollama pull "${LLAMA_MODEL}"
+        echo "[ollama-init] Pulling $${GENERAL_MODEL}..."
+        ollama pull "$${GENERAL_MODEL}"
+        echo "[ollama-init] Pulling $${CODE_MODEL}..."
+        ollama pull "$${CODE_MODEL}"
+        echo "[ollama-init] Pulling $${LLAMA_MODEL}..."
+        ollama pull "$${LLAMA_MODEL}"
         echo "[ollama-init] Installed models:"
         ollama list
         echo "[ollama-init] Done."
@@ -155,15 +158,27 @@ services:
   moltbot-cli:
     image: moltbot:local
     container_name: moltbot-cli
-    profiles: ["tools"]
+    profiles: [ "tools" ]
     depends_on:
       - moltbot-gateway
-    entrypoint: ["moltbot"]
+    entrypoint: [ "moltbot" ]
     volumes:
       - ./data/clawdbot:/home/node/.clawdbot
       - ./data/clawd:/home/node/clawd
 
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:latest
+    container_name: open-webui
+    restart: unless-stopped
+    depends_on:
+      - ollama
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+    ports:
+      - "8089:8080"
+    volumes:
+      - openwebui_data:/app/backend/data
+
 volumes:
   ollama_data:
-
-
+  openwebui_data:
