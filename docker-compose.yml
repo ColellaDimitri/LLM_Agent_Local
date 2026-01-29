@@ -72,7 +72,10 @@ services:
       - ./data:/data:rw
 
   moltbot-init:
-    image: moltbot:local
+    build:
+      context: https://github.com/moltbot/moltbot.git
+      dockerfile: Dockerfile
+    image: clawdbot:local
     container_name: moltbot-init
     restart: "no"
     pull_policy: never
@@ -140,7 +143,7 @@ services:
     build:
       context: https://github.com/moltbot/moltbot.git
       dockerfile: Dockerfile
-    image: moltbot:local
+    image: clawdbot:local
     container_name: moltbot-gateway
     restart: unless-stopped
     pull_policy: never
@@ -158,13 +161,16 @@ services:
       - ./data/clawd:/home/node/clawd
 
   moltbot-cli:
-    image: moltbot:local
+    build:
+      context: https://github.com/moltbot/moltbot.git
+      dockerfile: Dockerfile
+    image: clawdbot:local
     container_name: moltbot-cli
     profiles: [ "tools" ]
     pull_policy: never
     depends_on:
       - moltbot-gateway
-    entrypoint: [ "moltbot" ]
+    entrypoint: [ "clawdbot" ]
     volumes:
       - ./data/clawdbot:/home/node/.clawdbot
       - ./data/clawd:/home/node/clawd
