@@ -68,6 +68,101 @@ services:
     volumes:
       - ./data:/data:rw
 
+  moltbot-init:
+    image: moltbot:local
+    container_name: moltbot-init
+    restart: "no"
+    depends_on:
+      - ollama
+    environment:
+      - CLAWDBOT_CONFIG_PATH=/home/node/.clawdbot/clawdbot.json
+      - CLAWDBOT_ONBOARD=${CLAWDBOT_ONBOARD:-0}
+      - CLAWDBOT_AUTH_CHOICE=${CLAWDBOT_AUTH_CHOICE:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    volumes:
+      - ./data/clawdbot:/home/node/.clawdbot
+      - ./data/clawd:/home/node/clawd
+    entrypoint: [ "/bin/sh", "-lc" ]
+    command:
+      - |
+        set -eu
+        if command -v clawdbot >/dev/null 2>&1; then
+          CLI="clawdbot"
+        elif command -v moltbot >/dev/null 2>&1; then
+          CLI="moltbot"
+        else
+          echo "[moltbot-init] No clawdbot/moltbot CLI found in image."
+          exit 1
+        fi
+
+        CONFIG_PATH="${CLAWDBOT_CONFIG_PATH:-/home/node/.clawdbot/clawdbot.json}"
+        mkdir -p "$(dirname "$CONFIG_PATH")"
+        if [ ! -s "$CONFIG_PATH" ]; then
+          cat > "$CONFIG_PATH" <<'JSON'
+        {
+          "gateway": {
+            "mode": "local",
+            "bind": "loopback",
+            "port": 18789
+          },
+          "agent": {
+            "workspace": "/home/node/clawd"
+          }
+        }
+        JSON
+        fi
+
+        if [ "${CLAWDBOT_ONBOARD:-0}" = "1" ]; then
+          if [ -z "${CLAWDBOT_AUTH_CHOICE:-}" ]; then
+            echo "[moltbot-init] CLAWDBOT_AUTH_CHOICE is required when CLAWDBOT_ONBOARD=1."
+            exit 1
+          fi
+          if [ "${CLAWDBOT_AUTH_CHOICE}" = "apiKey" ] && [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+            echo "[moltbot-init] ANTHROPIC_API_KEY is required when CLAWDBOT_AUTH_CHOICE=apiKey."
+            exit 1
+          fi
+          $CLI onboard --non-interactive \
+            --mode local \
+            --auth-choice "${CLAWDBOT_AUTH_CHOICE}" \
+            ${ANTHROPIC_API_KEY:+--anthropic-api-key "$ANTHROPIC_API_KEY"} \
+            --gateway-port 18789 \
+            --gateway-bind loopback \
+            --skip-skills
+        fi
+
+        echo "[moltbot-init] Done."
+
+  moltbot-gateway:
+    build:
+      context: https://github.com/moltbot/moltbot.git
+      dockerfile: Dockerfile
+    image: moltbot:local
+    container_name: moltbot-gateway
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_started
+      moltbot-init:
+        condition: service_completed_successfully
+    ports:
+      - "18789:18789"
+    environment:
+      - CLAWDBOT_CONFIG_PATH=/home/node/.clawdbot/clawdbot.json
+    volumes:
+      - ./data/clawdbot:/home/node/.clawdbot
+      - ./data/clawd:/home/node/clawd
+
+  moltbot-cli:
+    image: moltbot:local
+    container_name: moltbot-cli
+    profiles: ["tools"]
+    depends_on:
+      - moltbot-gateway
+    entrypoint: ["moltbot"]
+    volumes:
+      - ./data/clawdbot:/home/node/.clawdbot
+      - ./data/clawd:/home/node/clawd
+
 volumes:
   ollama_data:
 
