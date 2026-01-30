@@ -10,7 +10,7 @@ services:
       - OLLAMA_DEBUG=debug
       - OLLAMA_LOAD_TIMEOUT=15m
     volumes:
-      - ollama_data:/root/.ollama
+      - /mnt/dockervol/ollama:/root/.ollama
 
   # Télécharge les modèles au démarrage (si pas déjà présents), puis s'arrête.
   ollama-init:
@@ -25,7 +25,7 @@ services:
       - LLAMA_MODEL=llama3.2:3b
       - OLLAMA_HOST=http://ollama:11434
     volumes:
-      - ollama_data:/root/.ollama
+      - /mnt/dockervol/ollama:/root/.ollama
     entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
@@ -69,7 +69,7 @@ services:
     ports:
       - "8088:8080"
     volumes:
-      - ./data:/data:rw
+      - /mnt/dockervol/agent-base/data:/data:rw
 
   moltbot-init:
     build:
@@ -87,8 +87,8 @@ services:
       - CLAWDBOT_AUTH_CHOICE=${CLAWDBOT_AUTH_CHOICE:-}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
     volumes:
-      - ./data/clawdbot:/home/node/.clawdbot
-      - ./data/clawd:/home/node/clawd
+      - /mnt/dockervol/moltbot/clawdbot:/home/node/.clawdbot
+      - /mnt/dockervol/moltbot/clawd:/home/node/clawd
     entrypoint: [ "/bin/sh", "-lc" ]
     command:
       - |
@@ -157,8 +157,8 @@ services:
     environment:
       - CLAWDBOT_CONFIG_PATH=/home/node/.clawdbot/clawdbot.json
     volumes:
-      - ./data/clawdbot:/home/node/.clawdbot
-      - ./data/clawd:/home/node/clawd
+      - /mnt/dockervol/moltbot/clawdbot:/home/node/.clawdbot
+      - /mnt/dockervol/moltbot/clawd:/home/node/clawd
 
   moltbot-cli:
     build:
@@ -172,8 +172,8 @@ services:
       - moltbot-gateway
     entrypoint: [ "clawdbot" ]
     volumes:
-      - ./data/clawdbot:/home/node/.clawdbot
-      - ./data/clawd:/home/node/clawd
+      - /mnt/dockervol/moltbot/clawdbot:/home/node/.clawdbot
+      - /mnt/dockervol/moltbot/clawd:/home/node/clawd
 
   open-webui:
     image: ghcr.io/open-webui/open-webui:latest
@@ -186,8 +186,4 @@ services:
     ports:
       - "8089:8080"
     volumes:
-      - openwebui_data:/app/backend/data
-
-volumes:
-  ollama_data:
-  openwebui_data:
+      - /mnt/dockervol/open-webui:/app/backend/data
